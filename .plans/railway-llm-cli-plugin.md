@@ -110,24 +110,64 @@ already a personal agent with its own memory.
 
 ---
 
+## Auth model: subscriptions, not API (the explicit goal)
+
+**Goal: no pay-per-token API. Use Claude Pro/Max + Codex (ChatGPT) Pro + other Pro
+subscriptions.** This is fully supported — at *both* layers of the stack — and the
+repo already wires the non-API paths.
+
+### Layer 1 — the delegated coding CLIs (the heavy lifting)
+
+| CLI | Subscription auth (no API) | Headless persistence |
+|---|---|---|
+| **Claude Code** | `claude setup-token` → a **one-year OAuth token** set as `CLAUDE_CODE_OAUTH_TOKEN`. Authenticates against Pro/Max, **no per-token charge**, **no browser on the box**. Requires Pro/Max/Team/Enterprise. | env var (no browser flow needed) |
+| **Codex CLI** | "Sign in with ChatGPT" → usage follows your Plus/Pro plan allowances. | persist `~/.codex/auth.json` on the volume |
+
+> ⚠️ **`ANTHROPIC_API_KEY` footgun.** If that env var is set *anywhere* on the box,
+> Claude Code ignores the subscription and **bills the API.** The Railway env must keep
+> it **unset** and use `CLAUDE_CODE_OAUTH_TOKEN` instead.
+
+### Layer 2 — the hermes orchestrator brain
+
+Also subscription-capable, no API key required:
+`hermes login --provider anthropic` (Claude `setup-token` credential store —
+`hermes_cli/main.py:2292`), `--provider openai-codex`, or `--provider nous`. So the
+thing the web UI talks to can *also* run off a subscription. (If keeping the orchestrator
+maximally simple is preferred, the web UI can drive the coding CLIs more directly — but
+the subscription-brain path means we don't have to.)
+
+### The catch that drives the design: one subscription = one person
+
+Subscriptions are for **individual interactive use**. Funneling the whole team through
+**one** person's plan is against ToS **and** throttles hard — rule of thumb: **1–3
+agents** is comfortable on **Max**, but **5+ agents overnight hit rate limits within
+hours**; **Pro ($20)** throttles far sooner than **Max ($100/$200)**.
+
+**This makes "personal agent per teammate" the *correct* architecture, not a luxury:**
+each teammate brings their **own** Claude Pro/Max + Codex Pro and pastes their **own**
+`setup-token`. That is ToS-clean (everyone on their own sub) and spreads rate limits
+across N accounts instead of melting one. For unattended overnight team-scale work,
+plan on **Max**, not Pro.
+
 ## Provisioning model: "drop a token, Claude runs"
 
-Three options, in increasing isolation. Recommend starting with **B**.
+Revised for **BYO-subscription** (was: per-user API keys). Recommend starting with **B**.
 
-- **A — Shared box, shared keys.** One `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` in
-  Railway env vars; all users share the same agent identity. Simplest; no per-user
-  cost attribution; fine for a small trusted team. *(MVP smoke-test only.)*
-- **B — Shared box, per-user keys + per-user sessions (recommended).** Open WebUI
-  accounts gate access; each user's API keys are stored against their session (via the
-  gateway's per-user session store). One Railway service, clean separation of memory
-  and cost per teammate, one box to operate.
+- **A — Shared box, one operator's subscription.** Single `CLAUDE_CODE_OAUTH_TOKEN` +
+  Codex login in env. Simplest, but ToS-grey and throttles under team load.
+  *(Smoke-test only — never the team default.)*
+- **B — Shared box, per-user subscription tokens + per-user sessions (recommended).**
+  Open WebUI accounts gate access; each teammate pastes their **own** `setup-token` /
+  Codex login once, stored against their session. One service to operate, clean
+  per-person isolation, rate limits spread across everyone's own plan.
 - **C — One service per teammate.** Each person gets their own Railway service from the
-  same image, with their own env/volume. Maximum isolation; higher cost and ops
-  surface. Reserve for when B's blast radius becomes a concern.
+  same image with their own env/volume. Maximum isolation; highest ops surface. Reserve
+  for when B's blast radius is a concern.
 
-**Token entry UX** ("drop in a token and Claude runs"): a teammate pastes their key
-once; the box validates it (`claude` / `codex` auth check), persists it to their
-session, and from then on their tasks run under their own key with all skills enabled.
+**Token entry UX** ("drop in a token and Claude runs") = a teammate pastes their own
+`claude setup-token` (and signs into Codex) once; the box validates it (`claude` /
+`codex` auth check), persists it to their session/volume, and from then on **their**
+tasks run under **their** subscription with all skills enabled — zero API billing.
 
 ---
 
@@ -145,8 +185,10 @@ session, and from then on their tasks run under their own key with all skills en
    `OPENAI_API_BASE_URL` → the hermes service's `/v1` and `OPENAI_API_KEY` →
    `API_SERVER_KEY`. Gives auth + multi-user accounts for free.
 4. **Env wiring** — `API_SERVER_ENABLED=true`, `API_SERVER_KEY`, `HERMES_HOME=/opt/data`,
-   plus provider keys per the chosen provisioning model. Document the full set in a
-   deploy guide derived from `.env.example`.
+   and **subscription** auth per the provisioning model: `CLAUDE_CODE_OAUTH_TOKEN` for
+   Claude Code (from `claude setup-token`) and persisted `~/.codex/auth.json` for Codex.
+   **Ensure `ANTHROPIC_API_KEY` is *unset*** so Claude Code uses the subscription, not the
+   API. Document the full set in a deploy guide derived from `.env.example`.
 5. **Operator SSH** — document the Railway shell as the "remote in and fix it" path;
    note that SSH is also a first-class terminal backend if we later want the box to
    reach *other* machines.
@@ -156,9 +198,10 @@ session, and from then on their tasks run under their own key with all skills en
 ## Phased rollout
 
 - **Phase 0 — Smoke test (Option A).** Slim `Dockerfile.railway` + `railway.json`, CLIs
-  baked in, shared key, API server on. Verify `claude`/`codex` run on the box and stream
-  back through `/v1`. *Exit:* a task typed into `curl` (or Open WebUI) produces real
-  Claude Code output.
+  baked in, **one operator's `CLAUDE_CODE_OAUTH_TOKEN`** (subscription, no API key), API
+  server on. Verify `claude`/`codex` run on the box on the subscription and stream back
+  through `/v1`. *Exit:* a task typed into `curl` (or Open WebUI) produces real Claude
+  Code output with **no API charge**.
 - **Phase 1 — Web front door.** Bundle Open WebUI as a Railway service pointed at `/v1`,
   with accounts enabled. *Exit:* a teammate logs into a URL, types a task, watches it run.
 - **Phase 2 — Personal agents (Option B).** Per-user sessions + per-user keys; enable the
@@ -174,10 +217,14 @@ session, and from then on their tasks run under their own key with all skills en
 
 ## Open questions
 
-1. **Provisioning model** — confirm we start at Option B (shared box, per-user keys).
+1. **Provisioning model** — confirm we start at Option B (shared box, **per-user
+   subscription tokens** — each teammate BYO Claude Pro/Max + Codex Pro). Phase 0 can use
+   one operator's token to prove the pipe.
 2. **Auth source of truth** — Open WebUI accounts, or an existing team SSO we should
    front it with?
-3. **Cost controls** — do we need per-user spend caps in Phase 2, or defer to Phase 4?
+3. **Rate-limit handling** — with subscriptions there is no per-token spend, but per-plan
+   rate limits. Do we need queueing/backoff + Pro-vs-Max guidance per teammate in Phase 2,
+   or defer to Phase 4? (Subscription throttling, not API cost, is the real constraint.)
 4. **Which CLIs in v1** — Claude Code + Codex confirmed; include OpenCode and the
    OpenClaw path in the first image, or add later?
 5. **Single box vs. per-teammate service** — how many people, and is shared-box blast
@@ -193,3 +240,5 @@ session, and from then on their tasks run under their own key with all skills en
 - **SSH-in** gives operators a break-glass path without touching the team's workflow.
 - Everything sits on **existing hermes-agent infrastructure**, so we inherit its
   sessions, skills, cron, and multi-platform gateways instead of reinventing them.
+- **No API billing** — runs entirely on teammates' existing Claude Pro/Max + Codex Pro
+  subscriptions via `setup-token` / ChatGPT sign-in, so there's a flat, predictable cost.
