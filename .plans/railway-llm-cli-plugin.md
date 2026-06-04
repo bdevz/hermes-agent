@@ -259,6 +259,95 @@ subscription with all skills enabled — zero API billing.
 
 ---
 
+## Implementation plan (build order)
+
+Everything lives in a new self-contained `railway/` directory plus a small, additive
+amount of new code inside hermes for per-user tokens and the shared-brain wiring. Each
+step lists the **artifacts** to create and the **acceptance criteria** it satisfies. Steps
+ship as small commits on `claude/railway-plugin-llm-integration-FvfBA`; the PR flips from
+draft to ready when Step 1 (Phase 0) is green on Railway.
+
+### Step 0 — Scaffolding (no behavior change)
+- **Artifacts:** `railway/` directory, `railway/README.md` (deploy guide skeleton),
+  `railway/.env.railway.example` (every env var documented).
+- **Done when:** structure is in place and documented; nothing else references it yet.
+
+### Step 1 — Phase 0 / Epic A: the agent box (P0)
+- **Artifacts:**
+  - `railway/Dockerfile.railway` — slim Debian + python3 + nodejs; `pip install` hermes
+    with a minimal extras set (gateway + local server); `npm i -g
+    @anthropic-ai/claude-code`. No Playwright/WhatsApp/ffmpeg.
+  - `railway/railway.json` — build from `Dockerfile.railway`; deploy with `/health`
+    healthcheck, restart-on-failure, and a volume mounted at `HERMES_HOME=/opt/data`.
+  - `railway/entrypoint.sh` — **startup guardrail**: hard-fail with a clear message if
+    `ANTHROPIC_API_KEY` (or any model-billing key) is set; verify `CLAUDE_CODE_OAUTH_TOKEN`
+    present; then launch `hermes gateway` with `API_SERVER_ENABLED=true`.
+- **Satisfies:** A1 (deploy, `/health`, `claude --version`, volume persists), A2 (token in →
+  output out, guardrail, zero API spend).
+- **Verify:** deploy to Railway; `curl /health`; `curl /v1/chat/completions` returns real
+  Claude Code output; confirm Anthropic console shows **zero** API usage; boot with a dummy
+  `ANTHROPIC_API_KEY` and confirm it refuses to start.
+- **Gate:** when this is green, **flip the PR to ready-for-review.**
+
+### Step 2 — Phase 1 / Epic B: web front door + login + usage tracking (P0)
+- **Artifacts:**
+  - `railway/openwebui.md` + `railway/openwebui.railway.json` — Open WebUI as a second
+    Railway service: `OPENAI_API_BASE_URL` → hermes `/v1`, `OPENAI_API_KEY` →
+    `API_SERVER_KEY`; **email/password auth on, SSO off**, admin-managed signups.
+  - Usage tracking: enable Open WebUI's user/activity records; capture source IP/location
+    at the proxy; pass the logged-in user identity to hermes via header so each task is
+    attributed per user.
+- **Satisfies:** B1 (login), B2 (who/when/where + per-task attribution, no secrets logged),
+  B3 (streamed output).
+- **Verify:** create an account, log in, run a task, see it streamed; confirm a login +
+  task row with user/time/IP exists; confirm no token/password in logs.
+
+### Step 3 — Phase 1 / Epic D: modern database + gbrain shared brain (P0, day-one)
+- **Artifacts:**
+  - Railway one-click **pgvector Postgres** service; hermes + gbrain read `DATABASE_URL`.
+  - `railway/gbrain.md` + `railway/gbrain.railway.json` — gbrain deployed on the same
+    pgvector DB.
+  - MCP wiring: register gbrain's MCP server with **both** the hermes orchestrator and the
+    Claude Code CLI (`.mcp.json` / `claude mcp add`) so `search`/`think`/`capture` are
+    available during tasks.
+- **Satisfies:** D1 (Postgres system of record, backups), D2 (gbrain over MCP, permission
+  scoping, available day one).
+- **Verify:** agent calls `search`/`capture`; knowledge persists across redeploys; user A's
+  private capture is not visible to user B.
+
+### Step 4 — Phase 2 / Epic C: personal agents on per-user tokens (P0) — *most new code*
+- **Artifacts (new hermes code, additive):**
+  - A small **encrypted per-user credential store** in Postgres keyed by Open WebUI user.
+  - A **token-entry flow** (chat command / lightweight settings hook) so a teammate pastes
+    their own `setup-token`; it's validated (`claude` auth check) and stored.
+  - Delegation wiring so each user's Claude Code subprocess runs with **their**
+    `CLAUDE_CODE_OAUTH_TOKEN` in its environment (per-session isolation).
+- **Satisfies:** C1 (own token, isolated rate limits, rotate/revoke), C2 (per-user memory
+  isolation), C3 (`@tag` from Discord/Slack).
+- **Verify:** two users with different tokens run concurrently; one hitting their limit does
+  not throttle the other; private memory stays private.
+- **Risk:** this is the part with real new code and the most uncertainty — built and
+  reviewed on its own commit.
+
+### Step 5 — Phase 3 / Epic E: overnight prep + OpenClaw (P1)
+- **Artifacts:** cron task config for unattended overnight jobs with per-user delivery;
+  `railway/openclaw-migration.md` documenting `hermes claw migrate`.
+- **Satisfies:** E1 (overnight delivery, attributed), E2 (OpenClaw import via dry-run).
+
+### Step 6 — Phase 4 / Epic F: team rollout + hardening (P1/P2)
+- **Artifacts:** rate-limit handling (graceful "throttled, retry" with backoff),
+  `railway/RUNBOOK.md` (SSH break-glass), secret-hygiene/log-redaction review; add the
+  rest of the team as accounts. Usage dashboards remain **P2**, out of scope for now.
+- **Satisfies:** F1 (add accounts, no refactor), F2 (rate-limit UX + runbook).
+
+### Sequencing notes
+- Steps 1→3 are the **day-one foundation** and should land together-ish for a usable PoC.
+- Step 4 is the largest engineering lift; everything before it is mostly config + a
+  guardrail script, so we de-risk by shipping the foundation first.
+- Each step is independently verifiable against its acceptance criteria before the next.
+
+---
+
 ### Decided
 
 - ✅ **No model-billing API anywhere** — all-Claude subscription, both layers. The
