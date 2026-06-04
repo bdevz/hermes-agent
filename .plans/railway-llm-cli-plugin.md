@@ -64,6 +64,9 @@ What is *not* yet in the repo, and is the real work of this plugin:
    a defined story for where each teammate's Claude **subscription** credential
    (`CLAUDE_CODE_OAUTH_TOKEN` from `claude setup-token`) lives and how it's scoped to that
    teammate's agent. No model-billing API keys anywhere.
+5. **A modern shared database + team brain** — a managed Postgres (pgvector) as the durable
+   backbone for users, usage tracking, and shared knowledge, plus an evaluation of
+   **gbrain** as the MCP-native synthesized team-memory layer on top of it (Epic D).
 
 ---
 
@@ -76,21 +79,29 @@ What is *not* yet in the repo, and is the real work of this plugin:
   │   ┌───────────────┐         ┌──────────────────────────────────────┐  │
   │   │  Open WebUI   │  /v1    │            hermes-agent              │  │
   │   │  (web front   │ ───────►│              gateway                 │  │
-  │   │   door, auth, │  SSE    │   ┌────────────────────────────────┐ │  │
-  │   │   per-user)   │ ◄───────│   │ api_server.py (OpenAI-compat)  │ │  │
-  │   └───────────────┘         │   └────────────────────────────────┘ │  │
-  │          ▲                  │   ┌────────────────────────────────┐ │  │
-  │          │                  │   │ Discord / Slack gateway (@tag) │ │  │
-  │   teammates' browsers       │   └────────────────────────────────┘ │  │
-  │   + Discord/Slack tags      │              │ delegates via          │  │
-  │                             │              ▼ terminal backend       │  │
+  │   │   door, email/│  SSE    │   ┌────────────────────────────────┐ │  │
+  │   │   pw login,   │ ◄───────│   │ local OpenAI-compat HTTP server│ │  │
+  │   │   per-user)   │         │   └────────────────────────────────┘ │  │
+  │   └───────────────┘         │   ┌────────────────────────────────┐ │  │
+  │          ▲                  │   │ Discord / Slack gateway (@tag) │ │  │
+  │          │                  │   └────────────────────────────────┘ │  │
+  │   teammates' browsers       │              │ delegates via          │  │
+  │   + Discord/Slack tags      │              ▼ terminal backend       │  │
   │                             │   ┌────────────────────────────────┐ │  │
-  │                             │   │  claude  │  codex  │ opencode   │ │  │
-  │                             │   │  (CLIs baked into the image)    │ │  │
+  │                             │   │  claude (v1 spine; per-user     │ │  │
+  │                             │   │  subscription token)            │ │  │
   │                             │   └────────────────────────────────┘ │  │
-  │                             └──────────────────────────────────────┘  │
-  │                                          │                             │
-  │                              Railway volume → HERMES_HOME (/opt/data)  │
+  │                             └───────────┬──────────────┬───────────┘  │
+  │                                         │ DATABASE_URL │ MCP           │
+  │                              Railway vol │              │              │
+  │                              HERMES_HOME │              ▼              │
+  │                              (/opt/data) ▼     ┌──────────────────┐    │
+  │                             ┌──────────────┐   │ gbrain (shared   │    │
+  │                             │ Postgres +   │◄──│ team brain;      │    │
+  │                             │ pgvector     │   │ search/think/    │    │
+  │                             │ (users,usage,│   │ capture via MCP) │    │
+  │                             │  knowledge)  │   └──────────────────┘    │
+  │                             └──────────────┘                          │
   └──────────────────────────────────────────────────────────────────────┘
             ▲
             │  operator SSH (Railway shell) → fix/debug without redeploy
@@ -98,12 +109,14 @@ What is *not* yet in the repo, and is the real work of this plugin:
 
 **Request flow for "give a task, get output":**
 
-1. Teammate opens Open WebUI, picks the `hermes-agent` model, types a task.
-2. Open WebUI calls `POST /v1/chat/completions` with `Authorization: Bearer <key>`.
-3. `api_server.py` builds a session and runs the agent loop.
-4. The agent picks the right delegation skill (`claude-code` / `codex` / `opencode`)
-   and runs the CLI on the box via the terminal backend (`pty=true`, `background=true`
-   for long jobs), polling for progress.
+1. Teammate logs into Open WebUI (email/password), picks the `hermes-agent` model, types a
+   task.
+2. Open WebUI calls `POST /v1/chat/completions` with `Authorization: Bearer <local key>`;
+   the login + task are recorded for usage tracking.
+3. The local server builds the user's session and runs the agent loop on **their** token.
+4. The agent runs Claude Code on the box via the terminal backend (`pty=true`,
+   `background=true` for long jobs), optionally consulting the shared brain over MCP
+   (`search`/`capture`), polling for progress.
 5. Streamed output flows back over SSE to Open WebUI.
 
 **The "@tag your own agent" flow** reuses the messaging gateways — each teammate's
@@ -208,7 +221,14 @@ subscription with all skills enabled — zero API billing.
    per teammate. **`ANTHROPIC_API_KEY` must be *unset*** so Claude Code uses the
    subscription, never the API. No model-billing keys in the env at all. Document the full
    set in a deploy guide derived from `.env.example`.
-5. **Operator SSH** — document the Railway shell as the "remote in and fix it" path;
+5. **Managed Postgres (pgvector)** — Railway's one-click pgvector Postgres as a third
+   service; the box reads `DATABASE_URL`. This is the durable backbone for users, usage
+   tracking, and shared knowledge (Epic D). Backups enabled.
+6. **gbrain (shared brain) — spike, then adopt/decline** — deploy gbrain as a service on
+   the same pgvector Postgres and expose it to Claude Code + the orchestrator over **MCP**
+   (`search`/`think`/`capture`). Gated by the Epic D2 decision vs. hermes's built-in
+   memory.
+7. **Operator SSH** — document the Railway shell as the "remote in and fix it" path;
    note that SSH is also a first-class terminal backend if we later want the box to
    reach *other* machines.
 
@@ -238,32 +258,190 @@ subscription with all skills enabled — zero API billing.
 
 ### Decided
 
-- ✅ **No model-billing API anywhere** — all-Claude subscription, both layers.
+- ✅ **No model-billing API anywhere** — all-Claude subscription, both layers. The
+  orchestrator brain stays on Claude (no separate Nous subscription) until/unless rate
+  limits force a split.
 - ✅ **Provisioning** — Option B, multi-user from day one; PoC with 2–3 own-subscription
   teammates, then open to the team.
 - ✅ **v1 CLI** — Claude Code only is the spine; Codex / OpenCode / OpenClaw deferred
   (subscription-only when added).
 - ✅ **Topology** — single shared box (B); per-teammate services (C) only if blast radius
   bites at full scale.
+- ✅ **Auth** — simple **email + password** accounts (admin sets the password). **No SSO.**
+  Purpose is lightweight identity + **usage tracking** (who logged in, when, from where),
+  not enterprise IAM.
+- ✅ **Plan tier** — the 2–3 PoC teammates are on **Max** (confirmed), which is what
+  unattended overnight work needs.
+- ✅ **Shared memory** — add a **modern database** as a shared team brain; evaluate
+  **gbrain** (Postgres + pgvector, MCP-native, integrates with Claude Code) as the
+  synthesized-knowledge layer on top of Railway's one-click pgvector Postgres. See
+  Epic D + the spike below.
 
-### Still open
+---
 
-1. **Auth source of truth** — Open WebUI accounts, or front it with an existing team SSO?
-2. **Brain rate-limit pressure** — start the orchestrator on Claude (all-Claude, simplest)
-   and only split it onto a separate Nous subscription if brain chatter starts starving
-   Claude Code under load? (Recommended: yes, start all-Claude, revisit if it bites.)
-3. **Plan tier** — are the 2–3 PoC teammates on **Max**? Pro will throttle unattended
-   overnight work much sooner.
+## User stories & acceptance criteria
+
+> Product framing: maximize what Claude + agents can do for the team while keeping the box
+> low-maintenance and ToS-clean. Stories are grouped into epics that map to the phased
+> rollout. Each story has **Given/When/Then** acceptance criteria that must pass before we
+> push code for that story. Priority: **P0** = blocks PoC, **P1** = needed for team
+> rollout, **P2** = enhancement.
+
+### Definition of Done (applies to every story)
+
+- Acceptance criteria below are demonstrably met (manual run or test).
+- No `ANTHROPIC_API_KEY` (or any model-billing key) reachable by the process — verified.
+- Change is documented in the deploy guide and committed to the feature branch.
+- Secrets (tokens, DB creds, passwords) are never logged or committed.
+
+### Epic A — Stand up the agent box on Railway (Phase 0) · P0
+
+**A1 — One-command Railway deploy.**
+*As an operator, I want to deploy the agent box to Railway from the repo so that the
+environment stands up without manual setup.*
+- **Given** the repo with `railway.json` + `Dockerfile.railway`, **when** I deploy,
+  **then** the service builds, `/health` returns 200, and the `claude` CLI is present
+  (`claude --version` succeeds inside the container).
+- **Given** a redeploy, **when** the container is replaced, **then** `HERMES_HOME`
+  (`/opt/data`) persists on the mounted volume (sessions/skills survive).
+- **Given** the slim image, **then** cold start is materially faster than the existing
+  "everything" image (no Playwright/WhatsApp/ffmpeg).
+
+**A2 — Drop in a Claude token, prove no API billing.**
+*As an operator, I want to set one Claude subscription token and have Claude run, with
+zero API spend, so that the no-API goal is proven end to end.*
+- **Given** `CLAUDE_CODE_OAUTH_TOKEN` set and `ANTHROPIC_API_KEY` unset, **when** I send a
+  task via `curl` to `/v1`, **then** I get real Claude Code output streamed back.
+- **Given** the container boots, **when** `ANTHROPIC_API_KEY` is detected in the
+  environment, **then** startup **fails loudly** with a clear error (guardrail against the
+  billing footgun).
+- **Given** a completed task, **when** I check the Anthropic console, **then** API usage is
+  **zero** (work was billed to the subscription).
+
+### Epic B — Web front door + login + usage tracking (Phase 1) · P0
+
+**B1 — Email/password login (no SSO).**
+*As a teammate, I want to log into a web URL with an email and a password set by the admin
+so that only known people can submit tasks.*
+- **Given** Open WebUI with email/password auth enabled and SSO disabled, **when** an admin
+  creates an account with a set password, **then** that user can log in and a stranger
+  cannot.
+- **Given** wrong credentials, **when** a user submits them, **then** access is denied and
+  the attempt is recorded.
+
+**B2 — Usage tracking (who, when, where).**
+*As the owner, I want every login and task attributed to a person so that I can see who is
+using the box and from where.*
+- **Given** a successful login, **when** it happens, **then** a record captures user email,
+  timestamp, and source IP/approximate location.
+- **Given** any submitted task, **when** it runs, **then** it is attributed to the
+  logged-in user and is reviewable later (per-user activity view or exportable log).
+- **Given** the tracking store, **then** it contains no plaintext passwords or tokens.
+
+**B3 — Task in → streamed output.**
+*As a teammate, I want to type a task and watch streamed output so that I get results in
+the browser without touching a terminal.*
+- **Given** I'm logged in, **when** I submit a task, **then** Claude Code output streams
+  back live (SSE) and long tasks run in the background with visible progress.
+
+### Epic C — Personal agents on each person's own subscription (Phase 2 PoC, 2–3 on Max) · P0
+
+**C1 — Paste my own Claude token once.**
+*As a teammate, I want to paste my own `claude setup-token` once so that my tasks run on
+**my** Max subscription and my rate limits are isolated from everyone else's.*
+- **Given** I'm logged in, **when** I paste my `setup-token`, **then** it is validated
+  (`claude` auth check), stored scoped to my account, and persisted on the volume.
+- **Given** my token is stored, **when** I run a task, **then** it executes under **my**
+  subscription (not a shared one), and another user hammering their limit does not throttle
+  me.
+- **Given** I need to rotate/revoke, **when** I replace or clear my token, **then** old
+  credentials are removed and no longer usable.
+
+**C2 — My agent remembers my context.**
+*As a teammate, I want my agent to recall my past work across sessions so that it builds on
+prior context.*
+- **Given** prior sessions, **when** I start a new one, **then** my agent can recall my
+  earlier work, and **cannot** see another user's private session memory.
+
+**C3 — @tag my personal agent from chat.**
+*As a teammate, I want to @tag my agent in Discord/Slack so that I can hand off legwork from
+where I already work.*
+- **Given** the gateway is enabled and my chat identity is linked, **when** I @tag the
+  agent, **then** it runs the task as my personal agent and delivers the result back to the
+  channel.
+
+### Epic D — Modern shared database / team brain (NEW) · P1
+
+**D1 — A modern database as system of record.**
+*As the team, we want a modern managed database so that everything (users, usage, memory,
+shared knowledge) is connected and durable, not scattered in flat files.*
+- **Given** a Railway one-click **pgvector Postgres** service, **when** the box connects via
+  `DATABASE_URL`, **then** users/usage/shared-knowledge persist in Postgres and survive
+  redeploys, with backups enabled.
+
+**D2 — Shared synthesized team brain via gbrain (spike → adopt/decline).**
+*As an agent and as a teammate, I want a shared, synthesized knowledge layer that every
+person's agent can query and contribute to, exposed over MCP, so that the team's knowledge
+compounds instead of living in one person's head.*
+- **Spike first:** stand up **gbrain** (Postgres + pgvector) as a Railway service and wire
+  it to Claude Code + the orchestrator over **MCP**.
+- **Given** gbrain is running, **when** an agent calls `search` / `think` / `capture`,
+  **then** it returns synthesized answers with citations and can persist new knowledge.
+- **Given** the multi-user setup, **when** user A captures private knowledge, **then** user
+  B cannot read it unless it's shared (permission scoping respected).
+- **Decision gate:** record whether gbrain *adds* value over hermes's built-in per-user
+  memory (SQLite/FTS5/Honcho). **Adopt** if it delivers the shared cross-team synthesis
+  those don't; **decline/defer** if it only duplicates them or the extra TS service isn't
+  worth the ops cost. Either way the decision and rationale are written down.
+
+### Epic E — Overnight prep + OpenClaw (Phase 3) · P1
+
+**E1 — Overnight prep delivered by morning.**
+*As a teammate, I want to schedule prep/legwork to run unattended overnight so that finished
+work is waiting in the morning.*
+- **Given** a scheduled cron task, **when** it runs overnight on my subscription, **then**
+  the result is delivered to my channel/inbox before the workday, attributed to me.
+
+**E2 — OpenClaw migration.**
+*As a teammate coming from OpenClaw, I want my config/skills imported so that I don't start
+from scratch.*
+- **Given** `~/.openclaw` data, **when** I run `hermes claw migrate`, **then** my config and
+  skills are imported (validated by a dry-run preview first).
+
+### Epic F — Team rollout + hardening (Phase 4) · P1/P2
+
+**F1 — Open to the team with no refactor.**
+*As the owner, I want to add the rest of the team as accounts so that rollout is a config
+change, not a rewrite.*
+- **Given** Option B, **when** I add N more email/password accounts + their own tokens,
+  **then** they work exactly like the PoC users with no code change.
+
+**F2 — Operate it safely.**
+*As an operator, I want rate-limit handling, secret hygiene, and a runbook so that the box
+stays healthy and break-glass SSH fixes are documented.*
+- **Given** a user hits their Claude rate limit, **when** it happens, **then** the agent
+  surfaces a clear "throttled, retry later" state (with backoff) rather than a raw error.
+- **Given** an incident, **when** an operator SSHes into the Railway shell, **then** the
+  runbook documents the common fixes without needing a redeploy.
+
+### Still open (need your input)
+
+1. **gbrain spike outcome** — proceed to adopt as the shared brain pending the D2 spike, or
+   start with plain pgvector Postgres and layer gbrain later? (Recommend: run the spike
+   early in Phase 2/3 since the Claude Code MCP fit is strong.)
+2. **Usage-tracking depth** — is login + per-task attribution (who/when/where) enough for
+   now, or do you also want aggregate dashboards (tasks/day per user, tokens-ish usage)?
 
 ---
 
 ## Why this is low-maintenance (the original goal)
 
-- The box runs **one image** with the CLIs and skills baked in — no per-developer setup.
-- **Open WebUI** handles accounts/UI so we maintain zero custom frontend.
+- The box runs **one image** with the CLI and skills baked in — no per-developer setup.
+- **Open WebUI** handles email/password accounts + UI so we maintain zero custom frontend.
+- **Managed Postgres (pgvector)** on Railway is the durable backbone — no DB to babysit.
 - **Persistent volume** means redeploys don't wipe memory or skills.
 - **SSH-in** gives operators a break-glass path without touching the team's workflow.
 - Everything sits on **existing hermes-agent infrastructure**, so we inherit its
   sessions, skills, cron, and multi-platform gateways instead of reinventing them.
-- **No API billing** — runs entirely on teammates' existing Claude Pro/Max subscriptions
+- **No API billing** — runs entirely on teammates' existing Claude Max subscriptions
   via `setup-token`, so cost is the flat subscription fee, nothing per-token.
