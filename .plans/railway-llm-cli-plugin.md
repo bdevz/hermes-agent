@@ -224,10 +224,10 @@ subscription with all skills enabled — zero API billing.
 5. **Managed Postgres (pgvector)** — Railway's one-click pgvector Postgres as a third
    service; the box reads `DATABASE_URL`. This is the durable backbone for users, usage
    tracking, and shared knowledge (Epic D). Backups enabled.
-6. **gbrain (shared brain) — spike, then adopt/decline** — deploy gbrain as a service on
-   the same pgvector Postgres and expose it to Claude Code + the orchestrator over **MCP**
-   (`search`/`think`/`capture`). Gated by the Epic D2 decision vs. hermes's built-in
-   memory.
+6. **gbrain (shared brain) — day-one foundation** — deploy gbrain as a service on the same
+   pgvector Postgres and expose it to Claude Code + the orchestrator over **MCP**
+   (`search`/`think`/`capture`). Committed, not gated — stands up with the rest of the
+   foundation.
 7. **Operator SSH** — document the Railway shell as the "remote in and fix it" path;
    note that SSH is also a first-class terminal backend if we later want the box to
    reach *other* machines.
@@ -241,8 +241,11 @@ subscription with all skills enabled — zero API billing.
   (subscription, no API key), local server on. Verify `claude` runs on the box on the
   subscription and streams back through `/v1`. *Exit:* a task via `curl` produces real
   Claude Code output with **no API charge**. (Single token here only proves wiring.)
-- **Phase 1 — Web front door.** Bundle Open WebUI as a Railway service pointed at `/v1`,
-  with accounts enabled. *Exit:* a teammate logs into a URL, types a task, watches it run.
+- **Phase 1 — Web front door + shared brain (day-one foundation).** Bundle Open WebUI as a
+  Railway service pointed at `/v1` with email/password accounts; stand up the **pgvector
+  Postgres** + **gbrain** services and wire gbrain to Claude Code over MCP. *Exit:* a
+  teammate logs into a URL, types a task, watches it run, and the agent can `search` /
+  `capture` against the shared brain.
 - **Phase 2 — Multi-user PoC (Option B, 2–3 people).** Per-user sessions + per-user
   `setup-token`s; enable the Discord/Slack gateway so `@tag` works alongside the web UI.
   *Exit:* 2–3 teammates run independent tasks with separate memory and their own
@@ -272,10 +275,14 @@ subscription with all skills enabled — zero API billing.
   not enterprise IAM.
 - ✅ **Plan tier** — the 2–3 PoC teammates are on **Max** (confirmed), which is what
   unattended overnight work needs.
-- ✅ **Shared memory** — add a **modern database** as a shared team brain; evaluate
-  **gbrain** (Postgres + pgvector, MCP-native, integrates with Claude Code) as the
-  synthesized-knowledge layer on top of Railway's one-click pgvector Postgres. See
-  Epic D + the spike below.
+- ✅ **Shared memory / database** — **modern database is day-one foundation.** Railway's
+  one-click **pgvector Postgres** is the durable backbone, and **gbrain** (Postgres +
+  pgvector, MCP-native, integrates with Claude Code) ships **on day one** as the shared
+  synthesized team brain — committed, not a spike. Coexists with hermes's per-user memory.
+  See Epic D.
+- ✅ **Usage-tracking depth** — login + per-task attribution (who/when/where) is the
+  approved scope for now. Aggregate dashboards (tasks/day per user) are a later **P2**
+  enhancement, not required for the PoC.
 
 ---
 
@@ -370,7 +377,13 @@ where I already work.*
   agent, **then** it runs the task as my personal agent and delivers the result back to the
   channel.
 
-### Epic D — Modern shared database / team brain (NEW) · P1
+### Epic D — Modern shared database / team brain (day-one foundation) · P0
+
+> **Committed, not a spike.** gbrain ships on **day one** as the shared team brain — it's
+> part of the foundation alongside the agent box and web front door, not a later
+> evaluation. hermes's built-in per-user memory (SQLite/FTS5/Honcho) **coexists**: it
+> holds each person's private session memory, while gbrain is the **shared, synthesized
+> cross-team knowledge graph** every agent reads from and writes to.
 
 **D1 — A modern database as system of record.**
 *As the team, we want a modern managed database so that everything (users, usage, memory,
@@ -379,20 +392,22 @@ shared knowledge) is connected and durable, not scattered in flat files.*
   `DATABASE_URL`, **then** users/usage/shared-knowledge persist in Postgres and survive
   redeploys, with backups enabled.
 
-**D2 — Shared synthesized team brain via gbrain (spike → adopt/decline).**
+**D2 — Shared synthesized team brain via gbrain.**
 *As an agent and as a teammate, I want a shared, synthesized knowledge layer that every
 person's agent can query and contribute to, exposed over MCP, so that the team's knowledge
 compounds instead of living in one person's head.*
-- **Spike first:** stand up **gbrain** (Postgres + pgvector) as a Railway service and wire
-  it to Claude Code + the orchestrator over **MCP**.
-- **Given** gbrain is running, **when** an agent calls `search` / `think` / `capture`,
+- **Given** gbrain deployed (Postgres + pgvector) and wired to Claude Code + the
+  orchestrator over **MCP**, **when** an agent calls `search` / `think` / `capture`,
   **then** it returns synthesized answers with citations and can persist new knowledge.
 - **Given** the multi-user setup, **when** user A captures private knowledge, **then** user
   B cannot read it unless it's shared (permission scoping respected).
-- **Decision gate:** record whether gbrain *adds* value over hermes's built-in per-user
-  memory (SQLite/FTS5/Honcho). **Adopt** if it delivers the shared cross-team synthesis
-  those don't; **decline/defer** if it only duplicates them or the extra TS service isn't
-  worth the ops cost. Either way the decision and rationale are written down.
+- **Given** day-one rollout, **when** a teammate runs their first task, **then** the shared
+  brain is already available to consult — no separate enablement step.
+
+> *Risk acknowledged (PO note):* committing to gbrain day-one puts a TS service on the
+> critical path. Mitigation: it sits on the same managed pgvector Postgres we're standing
+> up anyway, and the underlying `DATABASE_URL` data is usable directly if gbrain ever needs
+> to be bypassed. This is a noted risk, **not** a gate.
 
 ### Epic E — Overnight prep + OpenClaw (Phase 3) · P1
 
@@ -424,13 +439,12 @@ stays healthy and break-glass SSH fixes are documented.*
 - **Given** an incident, **when** an operator SSHes into the Railway shell, **then** the
   runbook documents the common fixes without needing a redeploy.
 
-### Still open (need your input)
+### Still open
 
-1. **gbrain spike outcome** — proceed to adopt as the shared brain pending the D2 spike, or
-   start with plain pgvector Postgres and layer gbrain later? (Recommend: run the spike
-   early in Phase 2/3 since the Claude Code MCP fit is strong.)
-2. **Usage-tracking depth** — is login + per-task attribution (who/when/where) enough for
-   now, or do you also want aggregate dashboards (tasks/day per user, tokens-ish usage)?
+*None blocking.* All scoping decisions are resolved (no-API/all-Claude, Option B multi-user,
+Claude Code v1 spine, email/password + usage tracking, Max tier, gbrain day-one,
+tracking depth). Design is ready to build against the acceptance criteria above. The only
+deferred item is the **P2** usage dashboards, intentionally out of PoC scope.
 
 ---
 
