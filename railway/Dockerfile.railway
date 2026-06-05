@@ -48,6 +48,6 @@ RUN chmod +x /opt/hermes/railway/entrypoint.sh && \
 # Persistent volume target — mount a Railway volume here so sessions, skills,
 # memories, per-user credentials and config survive redeploys.
 ENV HERMES_HOME=/opt/data
-VOLUME [ "/opt/data" ]
+# VOLUME [ "/opt/data" ]
 
 ENTRYPOINT [ "/opt/hermes/railway/entrypoint.sh" ]
