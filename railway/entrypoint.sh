@@ -72,6 +72,32 @@ export API_SERVER_ENABLED="${API_SERVER_ENABLED:-true}"
 export API_SERVER_HOST="${API_SERVER_HOST:-0.0.0.0}"
 export API_SERVER_PORT="${API_SERVER_PORT:-${PORT:-8642}}"
 
+# ---------------------------------------------------------------------------
+# 3b. API key strength guardrail
+# ---------------------------------------------------------------------------
+# The API server key is the ONLY thing gating a full-toolset agent (including
+# `terminal` — arbitrary command execution). An empty or trivially short key on
+# a publicly-bound server is an open remote-code-execution surface. When the key
+# is present in the environment, require it to be reasonably strong; if it's
+# absent here (it may instead live in $HERMES_HOME/.env, which hermes loads),
+# warn loudly rather than hard-fail.
+MIN_KEY_LEN="${API_SERVER_MIN_KEY_LEN:-16}"
+if [ "${API_SERVER_ENABLED}" = "true" ]; then
+    if [ -n "${API_SERVER_KEY:-}" ]; then
+        if [ "${#API_SERVER_KEY}" -lt "$MIN_KEY_LEN" ]; then
+            echo "FATAL: API_SERVER_KEY is too short (${#API_SERVER_KEY} chars; need >= ${MIN_KEY_LEN})." >&2
+            echo "       This server is reachable with a full toolset incl. terminal — a weak key is an" >&2
+            echo "       RCE risk. Generate a strong key:  openssl rand -hex 32" >&2
+            echo "       (Override the minimum with API_SERVER_MIN_KEY_LEN if you really must.)" >&2
+            exit 1
+        fi
+    else
+        echo "WARNING: API_SERVER_KEY is not set in the environment. If it is also unset in" >&2
+        echo "         \$HERMES_HOME/.env, the API server is UNAUTHENTICATED and world-open." >&2
+        echo "         Set a strong key (openssl rand -hex 32) as a service variable." >&2
+    fi
+fi
+
 echo "Starting hermes gateway (API server on ${API_SERVER_HOST}:${API_SERVER_PORT}, subscription-only)..." >&2
 
 # ---------------------------------------------------------------------------
