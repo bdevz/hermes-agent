@@ -63,11 +63,23 @@ jobs:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
           SERVICE: ${{ inputs.service || vars.RAILWAY_SERVICE || 'agent-box' }}
         run: |
-          set -euo pipefail
-          if [ -n "${SERVICE}" ]; then
-            railway up --service "${SERVICE}" --ci
-          else
-            railway up --ci   # project token is already scoped to one service/env
+          set -uo pipefail
+          deploy() {
+            if [ -n "${SERVICE}" ]; then
+              railway up --service "${SERVICE}" --ci
+            else
+              railway up --ci   # project token is already scoped to one service/env
+            fi
+          }
+          if ! deploy; then
+            echo "::group::Railway build logs (after failure)"
+            railway logs --build ${SERVICE:+--service "$SERVICE"} 2>&1 | tail -300 || true
+            echo "::endgroup::"
+            echo "::group::Railway deploy logs (after failure)"
+            railway logs --deployment ${SERVICE:+--service "$SERVICE"} 2>&1 | tail -300 || true
+            echo "::endgroup::"
+            echo "::error::railway up failed — see the Railway build/deploy logs captured above for the reason."
+            exit 1
           fi
 
       - name: Phase-0 verify (health + zero-API-spend)
