@@ -1,0 +1,65 @@
+name: Deploy to Railway
+
+# Token-based ("API") deploy of the agent box to Railway.
+#
+# Setup (one time):
+#   1. In Railway: create the agent-box service (Deploy from this GitHub repo),
+#      and set its config-as-code path to `railway/railway.json`.
+#   2. Create a PROJECT token (Railway → project → Settings → Tokens), scoped to
+#      the environment you want to deploy.
+#   3. Add it to this repo: Settings → Secrets and variables → Actions →
+#      New repository secret → name `RAILWAY_TOKEN`, value = the project token.
+#   4. (Optional) Add a repo *variable* `RAILWAY_SERVICE` = the service name/ID,
+#      or pass it when you run the workflow.
+#
+# Run it: Actions tab → "Deploy to Railway" → Run workflow.
+# (Manual by default so deploys never fire unexpectedly. Uncomment the `push`
+# trigger below to auto-deploy when railway/ changes on the feature branch.)
+
+on:
+  workflow_dispatch:
+    inputs:
+      service:
+        description: "Railway service name or ID (overrides RAILWAY_SERVICE var)"
+        required: false
+        type: string
+  # push:
+  #   branches: [claude/railway-plugin-llm-integration-FvfBA]
+  #   paths:
+  #     - 'railway/**'
+  #     - '.github/workflows/railway-deploy.yml'
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    # Skip if no token configured (e.g. on forks that haven't set the secret).
+    if: ${{ github.event_name != 'workflow_dispatch' || true }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Railway CLI
+        run: npm i -g @railway/cli
+
+      - name: Verify token present
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+        run: |
+          if [ -z "${RAILWAY_TOKEN}" ]; then
+            echo "::error::RAILWAY_TOKEN secret is not set. Add a Railway project token as a repo secret."
+            exit 1
+          fi
+          railway whoami || true   # project tokens may not resolve a user; non-fatal
+
+      - name: Deploy agent box
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          SERVICE: ${{ inputs.service || vars.RAILWAY_SERVICE }}
+        run: |
+          set -euo pipefail
+          if [ -n "${SERVICE}" ]; then
+            railway up --service "${SERVICE}" --ci
+          else
+            # Project token is already scoped to one service/environment.
+            railway up --ci
+          fi

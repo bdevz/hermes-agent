@@ -28,6 +28,10 @@ pay-per-token API, ever. Design rationale and the full backlog live in
 
 ## Deploy order (maps to the implementation plan)
 
+> **Connecting to Railway?** See [`DEPLOY.md`](./DEPLOY.md) for the three ways to
+> connect this repo (GitHub auto-deploy, token-based `deploy.sh`, or GitHub
+> Actions) — including the project-token "reconnect via API" path.
+
 ### Step 1 — Agent box (Phase 0)
 1. New Railway service from this repo; it auto-detects `railway/railway.json`
    (or set the config path to `railway/railway.json`).
