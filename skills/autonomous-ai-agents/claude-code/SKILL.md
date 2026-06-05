@@ -77,6 +77,23 @@ terminal(command="claude 'Add unit tests for auth'", workdir="/tmp/issue-2", bac
 process(action="list")
 ```
 
+## Multi-user agent box (per-user subscriptions)
+
+When running on the Railway agent box (see `railway/`), each teammate has their
+own Claude subscription token. If the session environment has `AGENTBOX_USER_ID`
+set, **delegate through `claude-as-user` instead of bare `claude`** so the work
+runs on that teammate's subscription (isolated rate limits, correct billing):
+
+```
+terminal(command="claude-as-user 'Add error handling to the API calls'", workdir="/path/to/project", pty=true)
+```
+
+`claude-as-user` reads `AGENTBOX_USER_ID` from the session env (or takes
+`--user <id>`), looks up the encrypted token, strips any billing keys, injects
+the user's `CLAUDE_CODE_OAUTH_TOKEN`, records the task, and execs `claude` — so
+every flag and pattern above works identically. If `AGENTBOX_USER_ID` is not set
+(operator/default agent), use plain `claude` as usual.
+
 ## Key Flags
 
 | Flag | Effect |

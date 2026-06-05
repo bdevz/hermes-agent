@@ -1,0 +1,129 @@
+name: Deploy to Railway
+
+# Token-based ("API") deploy of the agent box to Railway via `railway up`.
+#
+# DORMANT: the active deploy path is Railway's native GitHub-source integration
+# (Railway builds from git on push). The `railway up` CLI path hit Railway's
+# Metal-builder snapshot bug (instant "Deploy failed", empty build logs), so the
+# automatic push trigger is disabled to avoid red-flagging the PR. This workflow
+# is kept (manual-only) in case the CLI path is needed later; note that
+# workflow_dispatch only runs once the workflow is on the default branch.
+#
+# Re-enable the push trigger only if you go back to the `railway up` path.
+
+on:
+  workflow_dispatch:
+    inputs:
+      service:
+        description: "Railway service name or ID (overrides RAILWAY_SERVICE var)"
+        required: false
+        type: string
+  # push trigger intentionally disabled — see note above (using GitHub-source builds).
+  # push:
+  #   branches: [claude/railway-plugin-llm-integration-FvfBA]
+  #   paths:
+  #     - 'railway/**'
+  #     - '.github/workflows/railway-deploy.yml'
+
+concurrency:
+  group: railway-deploy-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Railway CLI
+        run: npm i -g @railway/cli
+
+      - name: Verify token present
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+        run: |
+          if [ -z "${RAILWAY_TOKEN}" ]; then
+            echo "::error::RAILWAY_TOKEN secret is not set. Add a Railway project token as a repo secret, then re-run."
+            exit 1
+          fi
+          railway whoami || true   # project tokens may not resolve a user; non-fatal
+
+      - name: Deploy agent box
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          SERVICE: ${{ inputs.service || vars.RAILWAY_SERVICE || 'agent-box' }}
+        run: |
+          set -uo pipefail
+          deploy() {
+            if [ -n "${SERVICE}" ]; then
+              railway up --service "${SERVICE}" --ci
+            else
+              railway up --ci   # project token is already scoped to one service/env
+            fi
+          }
+          if ! deploy; then
+            echo "::group::Railway build logs (after failure)"
+            railway logs --build ${SERVICE:+--service "$SERVICE"} 2>&1 | tail -300 || true
+            echo "::endgroup::"
+            echo "::group::Railway deploy logs (after failure)"
+            railway logs --deployment ${SERVICE:+--service "$SERVICE"} 2>&1 | tail -300 || true
+            echo "::endgroup::"
+            echo "::error::railway up failed — see the Railway build/deploy logs captured above for the reason."
+            exit 1
+          fi
+
+      - name: Phase-0 verify (health + zero-API-spend)
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          SERVICE: ${{ inputs.service || vars.RAILWAY_SERVICE || 'agent-box' }}
+          API_SERVER_KEY: ${{ secrets.API_SERVER_KEY }}
+          DOMAIN_OVERRIDE: ${{ vars.RAILWAY_PUBLIC_DOMAIN }}
+        run: |
+          set -uo pipefail
+
+          # Resolve the public domain: explicit override, else ask Railway.
+          DOMAIN="${DOMAIN_OVERRIDE}"
+          if [ -z "${DOMAIN}" ]; then
+            RAW="$(railway domain ${SERVICE:+--service "$SERVICE"} 2>/dev/null || true)"
+            DOMAIN="$(printf '%s\n' "$RAW" | grep -oE '[a-zA-Z0-9.-]+\.(up\.railway\.app|railway\.app)' | head -1)"
+          fi
+          DOMAIN="${DOMAIN#https://}"; DOMAIN="${DOMAIN#http://}"
+
+          if [ -z "${DOMAIN}" ]; then
+            echo "::warning::Deploy succeeded but could not auto-resolve the public domain."
+            echo "Set repo variable RAILWAY_PUBLIC_DOMAIN to enable the automated health check,"
+            echo "or verify manually: curl https://<domain>/health"
+            exit 0
+          fi
+          echo "Resolved domain: https://${DOMAIN}"
+
+          # Poll /health until 200 (deploys take time to go live).
+          echo "Waiting for /health ..."
+          ok=""
+          for i in $(seq 1 40); do
+            code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "https://${DOMAIN}/health" || true)"
+            if [ "${code}" = "200" ]; then ok=1; echo "health: 200 (attempt $i)"; break; fi
+            echo "health: ${code:-no-response} (attempt $i) — retrying"; sleep 15
+          done
+          if [ -z "${ok}" ]; then
+            echo "::error::/health never returned 200 — deploy may be unhealthy."
+            exit 1
+          fi
+
+          # Optional zero-spend smoke test (needs API_SERVER_KEY secret).
+          if [ -n "${API_SERVER_KEY}" ]; then
+            echo "Running zero-API-spend chat smoke test ..."
+            resp="$(curl -s --max-time 120 "https://${DOMAIN}/v1/chat/completions" \
+              -H "Authorization: Bearer ${API_SERVER_KEY}" \
+              -H 'Content-Type: application/json' \
+              -d '{"model":"hermes-agent","messages":[{"role":"user","content":"Reply with the single word: ok"}]}' || true)"
+            echo "Response (truncated): ${resp:0:400}"
+            if printf '%s' "$resp" | grep -qi '"error"'; then
+              echo "::error::Chat endpoint returned an error — check the box's CLAUDE_CODE_OAUTH_TOKEN and that ANTHROPIC_API_KEY is unset."
+              exit 1
+            fi
+            echo "Chat smoke test passed. Confirm zero API spend in the Anthropic console (work should bill the subscription)."
+          else
+            echo "API_SERVER_KEY secret not set — skipping the chat smoke test (health check passed)."
+          fi
