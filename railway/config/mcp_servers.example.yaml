@@ -1,0 +1,28 @@
+# gbrain shared-brain MCP wiring (Epic D) — paste into $HERMES_HOME/config.yaml
+# ============================================================================
+# This registers the gbrain shared team brain as an MCP server for the hermes
+# orchestrator. gbrain exposes search / think / capture tools backed by the
+# Railway pgvector Postgres. Every teammate's agent reads from and writes to
+# this shared brain, while hermes's own per-user session memory stays private.
+#
+# Use the HTTP form if gbrain runs as its own Railway service (recommended), or
+# the stdio form if you co-locate it in the agent box image.
+
+mcp_servers:
+  gbrain:
+    # --- HTTP form: gbrain is a separate Railway service ---
+    url: ${GBRAIN_MCP_URL}            # e.g. https://gbrain.up.railway.app/mcp
+    headers:
+      Authorization: "Bearer ${GBRAIN_MCP_TOKEN}"
+    timeout: 120
+
+    # --- stdio form (alternative): gbrain co-located in this image ---
+    # command: npx
+    # args: ["-y", "gbrain", "mcp"]
+    # env:
+    #   DATABASE_URL: ${DATABASE_URL}
+
+# To also expose gbrain to the Claude Code CLI during delegated tasks, register
+# it with Claude Code as well (see railway/gbrain.md):
+#   claude mcp add --transport http gbrain "$GBRAIN_MCP_URL" \
+#     --header "Authorization: Bearer $GBRAIN_MCP_TOKEN"

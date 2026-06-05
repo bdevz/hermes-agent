@@ -267,6 +267,17 @@ step lists the **artifacts** to create and the **acceptance criteria** it satisf
 ship as small commits on `claude/railway-plugin-llm-integration-FvfBA`; the PR flips from
 draft to ready when Step 1 (Phase 0) is green on Railway.
 
+> **Build status (shipped in `railway/`):** all artifacts for Steps 0–6 are committed.
+> The per-user credential store + usage tracking + token-env builder (`railway/agentbox/`)
+> are covered by **16 passing unit tests** (`railway/tests/test_agentbox.py`), and the
+> `claude-as-user` delegation path is verified end-to-end (resolves the user's token,
+> strips billing keys, injects `CLAUDE_CODE_OAUTH_TOKEN`, execs `claude`). What remains is
+> **operator-only and can't be done from here:** the live Railway deploy, running
+> `claude setup-token`, standing up the Postgres/gbrain services, and the one-line redirect
+> of the `claude-code` skill to `claude-as-user` (documented in `railway/README.md` →
+> Step 4). The PR stays **draft** until Phase 0 is green on a real Railway deploy.
+
+
 ### Step 0 — Scaffolding (no behavior change)
 - **Artifacts:** `railway/` directory, `railway/README.md` (deploy guide skeleton),
   `railway/.env.railway.example` (every env var documented).

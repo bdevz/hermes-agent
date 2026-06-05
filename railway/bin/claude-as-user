@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+#
+# claude-as-user — run Claude Code under a specific teammate's stored Claude
+# subscription token (Epic C). This is the per-user delegation entrypoint: the
+# hermes claude-code skill should invoke THIS instead of bare `claude` so that
+# work bills to the right person's subscription and rate limits stay isolated.
+#
+# Usage:
+#   claude-as-user <user_id> [claude args...]
+#   AGENTBOX_USER_ID=<user_id> claude-as-user [claude args...]
+#
+# It looks up the user's token, strips any billing keys, injects their
+# CLAUDE_CODE_OAUTH_TOKEN, records the task, and execs `claude`.
+set -euo pipefail
+
+if [ -n "${1:-}" ] && [[ "${1}" != -* ]]; then
+    USER_ID="$1"; shift
+else
+    USER_ID="${AGENTBOX_USER_ID:-}"
+fi
+
+if [ -z "${USER_ID}" ]; then
+    echo "claude-as-user: no user id (pass as first arg or set AGENTBOX_USER_ID)" >&2
+    exit 2
+fi
+
+# Resolve repo root so `python -m railway.agentbox.cli` is importable even when
+# the caller's CWD is a temp project dir (delegated tasks usually cd elsewhere).
+ROOT="${HERMES_INSTALL_DIR:-/opt/hermes}"
+exec env PYTHONPATH="${ROOT}:${PYTHONPATH:-}" \
+    python3 -m railway.agentbox.cli run "${USER_ID}" -- "$@"
