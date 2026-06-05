@@ -1,20 +1,25 @@
 name: Deploy to Railway
 
-# Token-based ("API") deploy of the agent box to Railway.
+# Token-based ("API") deploy of the agent box to Railway, with a Phase-0
+# verification (health + zero-API-spend) afterwards.
 #
 # Setup (one time):
 #   1. In Railway: create the agent-box service (Deploy from this GitHub repo),
-#      and set its config-as-code path to `railway/railway.json`.
+#      set its config-as-code path to `railway/railway.json`, attach a volume at
+#      /opt/data, and set service variables (CLAUDE_CODE_OAUTH_TOKEN,
+#      API_SERVER_KEY). Do NOT set ANTHROPIC_API_KEY.
 #   2. Create a PROJECT token (Railway → project → Settings → Tokens), scoped to
 #      the environment you want to deploy.
-#   3. Add it to this repo: Settings → Secrets and variables → Actions →
-#      New repository secret → name `RAILWAY_TOKEN`, value = the project token.
-#   4. (Optional) Add a repo *variable* `RAILWAY_SERVICE` = the service name/ID,
-#      or pass it when you run the workflow.
+#   3. Add repo secret `RAILWAY_TOKEN` = the project token
+#      (Settings → Secrets and variables → Actions). NEVER paste it in chat/code.
+#   4. (Optional) repo *variable* `RAILWAY_SERVICE` = the service name/ID.
+#   5. (Optional) repo secret `API_SERVER_KEY` to enable the zero-spend check,
+#      and repo variable `RAILWAY_PUBLIC_DOMAIN` if auto-resolution can't find it.
 #
-# Run it: Actions tab → "Deploy to Railway" → Run workflow.
-# (Manual by default so deploys never fire unexpectedly. Uncomment the `push`
-# trigger below to auto-deploy when railway/ changes on the feature branch.)
+# Triggers: manual (Actions → Run workflow) OR a push to the feature branch that
+# touches railway/. The push trigger is what lets the deploy be kicked by a
+# commit (workflow_dispatch alone requires the workflow to live on the default
+# branch).
 
 on:
   workflow_dispatch:
@@ -23,17 +28,19 @@ on:
         description: "Railway service name or ID (overrides RAILWAY_SERVICE var)"
         required: false
         type: string
-  # push:
-  #   branches: [claude/railway-plugin-llm-integration-FvfBA]
-  #   paths:
-  #     - 'railway/**'
-  #     - '.github/workflows/railway-deploy.yml'
+  push:
+    branches: [claude/railway-plugin-llm-integration-FvfBA]
+    paths:
+      - 'railway/**'
+      - '.github/workflows/railway-deploy.yml'
+
+concurrency:
+  group: railway-deploy-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    # Skip if no token configured (e.g. on forks that haven't set the secret).
-    if: ${{ github.event_name != 'workflow_dispatch' || true }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -46,7 +53,7 @@ jobs:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
         run: |
           if [ -z "${RAILWAY_TOKEN}" ]; then
-            echo "::error::RAILWAY_TOKEN secret is not set. Add a Railway project token as a repo secret."
+            echo "::error::RAILWAY_TOKEN secret is not set. Add a Railway project token as a repo secret, then re-run."
             exit 1
           fi
           railway whoami || true   # project tokens may not resolve a user; non-fatal
@@ -60,6 +67,60 @@ jobs:
           if [ -n "${SERVICE}" ]; then
             railway up --service "${SERVICE}" --ci
           else
-            # Project token is already scoped to one service/environment.
-            railway up --ci
+            railway up --ci   # project token is already scoped to one service/env
+          fi
+
+      - name: Phase-0 verify (health + zero-API-spend)
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+          SERVICE: ${{ inputs.service || vars.RAILWAY_SERVICE }}
+          API_SERVER_KEY: ${{ secrets.API_SERVER_KEY }}
+          DOMAIN_OVERRIDE: ${{ vars.RAILWAY_PUBLIC_DOMAIN }}
+        run: |
+          set -uo pipefail
+
+          # Resolve the public domain: explicit override, else ask Railway.
+          DOMAIN="${DOMAIN_OVERRIDE}"
+          if [ -z "${DOMAIN}" ]; then
+            RAW="$(railway domain ${SERVICE:+--service "$SERVICE"} 2>/dev/null || true)"
+            DOMAIN="$(printf '%s\n' "$RAW" | grep -oE '[a-zA-Z0-9.-]+\.(up\.railway\.app|railway\.app)' | head -1)"
+          fi
+          DOMAIN="${DOMAIN#https://}"; DOMAIN="${DOMAIN#http://}"
+
+          if [ -z "${DOMAIN}" ]; then
+            echo "::warning::Deploy succeeded but could not auto-resolve the public domain."
+            echo "Set repo variable RAILWAY_PUBLIC_DOMAIN to enable the automated health check,"
+            echo "or verify manually: curl https://<domain>/health"
+            exit 0
+          fi
+          echo "Resolved domain: https://${DOMAIN}"
+
+          # Poll /health until 200 (deploys take time to go live).
+          echo "Waiting for /health ..."
+          ok=""
+          for i in $(seq 1 40); do
+            code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "https://${DOMAIN}/health" || true)"
+            if [ "${code}" = "200" ]; then ok=1; echo "health: 200 (attempt $i)"; break; fi
+            echo "health: ${code:-no-response} (attempt $i) — retrying"; sleep 15
+          done
+          if [ -z "${ok}" ]; then
+            echo "::error::/health never returned 200 — deploy may be unhealthy."
+            exit 1
+          fi
+
+          # Optional zero-spend smoke test (needs API_SERVER_KEY secret).
+          if [ -n "${API_SERVER_KEY}" ]; then
+            echo "Running zero-API-spend chat smoke test ..."
+            resp="$(curl -s --max-time 120 "https://${DOMAIN}/v1/chat/completions" \
+              -H "Authorization: Bearer ${API_SERVER_KEY}" \
+              -H 'Content-Type: application/json' \
+              -d '{"model":"hermes-agent","messages":[{"role":"user","content":"Reply with the single word: ok"}]}' || true)"
+            echo "Response (truncated): ${resp:0:400}"
+            if printf '%s' "$resp" | grep -qi '"error"'; then
+              echo "::error::Chat endpoint returned an error — check the box's CLAUDE_CODE_OAUTH_TOKEN and that ANTHROPIC_API_KEY is unset."
+              exit 1
+            fi
+            echo "Chat smoke test passed. Confirm zero API spend in the Anthropic console (work should bill the subscription)."
+          else
+            echo "API_SERVER_KEY secret not set — skipping the chat smoke test (health check passed)."
           fi

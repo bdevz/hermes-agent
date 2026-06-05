@@ -45,9 +45,15 @@ redeploy from your laptop, a server, or to "reconnect" a project after the fact.
 2. Repo → **Settings → Secrets and variables → Actions**:
    - secret `RAILWAY_TOKEN` = the project token
    - (optional) variable `RAILWAY_SERVICE` = the service name/ID
-3. Run it from the **Actions** tab → "Deploy to Railway" → **Run workflow**
-   (manual by default so deploys never fire unexpectedly). Uncomment the `push`
-   trigger in the workflow to auto-deploy when `railway/**` changes.
+3. It deploys on a **push to the feature branch that touches `railway/**`**, or
+   manually from the **Actions** tab → "Deploy to Railway" → **Run workflow**.
+   After deploying it runs a **Phase-0 check**: polls `/health`, and (if you add a
+   repo secret `API_SERVER_KEY`) runs a zero-API-spend chat smoke test. If the
+   public domain can't be auto-resolved, set repo variable `RAILWAY_PUBLIC_DOMAIN`.
+
+> Why a push trigger (not just manual): `workflow_dispatch` only works when the
+> workflow lives on the **default branch**. Triggering on push to the feature
+> branch lets the deploy be kicked by a commit while the work is still on the PR.
 
 ## After connecting — verify Phase 0
 
