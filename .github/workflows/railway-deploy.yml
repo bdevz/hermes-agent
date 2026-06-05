@@ -61,7 +61,7 @@ jobs:
       - name: Deploy agent box
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
-          SERVICE: ${{ inputs.service || vars.RAILWAY_SERVICE }}
+          SERVICE: ${{ inputs.service || vars.RAILWAY_SERVICE || 'agent-box' }}
         run: |
           set -euo pipefail
           if [ -n "${SERVICE}" ]; then
@@ -73,7 +73,7 @@ jobs:
       - name: Phase-0 verify (health + zero-API-spend)
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
-          SERVICE: ${{ inputs.service || vars.RAILWAY_SERVICE }}
+          SERVICE: ${{ inputs.service || vars.RAILWAY_SERVICE || 'agent-box' }}
           API_SERVER_KEY: ${{ secrets.API_SERVER_KEY }}
           DOMAIN_OVERRIDE: ${{ vars.RAILWAY_PUBLIC_DOMAIN }}
         run: |
