@@ -41,7 +41,9 @@ RUN pip install --no-cache-dir -e ".[messaging,cron,pty,mcp,cli]" --break-system
     npm install -g @anthropic-ai/claude-code && \
     npm cache clean --force
 
-RUN chmod +x /opt/hermes/railway/entrypoint.sh
+RUN chmod +x /opt/hermes/railway/entrypoint.sh && \
+    chmod +x /opt/hermes/railway/bin/claude-as-user && \
+    ln -sf /opt/hermes/railway/bin/claude-as-user /usr/local/bin/claude-as-user
 
 # Persistent volume target — mount a Railway volume here so sessions, skills,
 # memories, per-user credentials and config survive redeploys.

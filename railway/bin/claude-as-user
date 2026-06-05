@@ -1,26 +1,33 @@
 #!/usr/bin/env bash
 #
 # claude-as-user — run Claude Code under a specific teammate's stored Claude
-# subscription token (Epic C). This is the per-user delegation entrypoint: the
-# hermes claude-code skill should invoke THIS instead of bare `claude` so that
-# work bills to the right person's subscription and rate limits stay isolated.
+# subscription token (Epic C). This is the per-user delegation entrypoint: in a
+# multi-user agent box, delegated coding should go through THIS instead of bare
+# `claude` so work bills to the right person's subscription and rate limits stay
+# isolated.
 #
-# Usage:
-#   claude-as-user <user_id> [claude args...]
-#   AGENTBOX_USER_ID=<user_id> claude-as-user [claude args...]
+# The user is resolved from (in order):
+#   1. --user <id>
+#   2. $AGENTBOX_USER_ID   (the gateway sets this per session — the one wiring point)
+# Everything else is passed straight through to `claude`.
 #
-# It looks up the user's token, strips any billing keys, injects their
-# CLAUDE_CODE_OAUTH_TOKEN, records the task, and execs `claude`.
+# Examples:
+#   claude-as-user --user alice -p "Add error handling"
+#   AGENTBOX_USER_ID=alice claude-as-user -p "Add error handling"
+#   AGENTBOX_USER_ID=alice claude-as-user 'Refactor the auth module'
 set -euo pipefail
 
-if [ -n "${1:-}" ] && [[ "${1}" != -* ]]; then
-    USER_ID="$1"; shift
-else
-    USER_ID="${AGENTBOX_USER_ID:-}"
+USER_ID="${AGENTBOX_USER_ID:-}"
+
+# Pull an optional leading --user/-u flag without disturbing the rest of the
+# args (which belong to claude, and may themselves be a bare prompt string).
+if [ "${1:-}" = "--user" ] || [ "${1:-}" = "-u" ]; then
+    USER_ID="${2:-}"
+    shift 2 || { echo "claude-as-user: --user requires a value" >&2; exit 2; }
 fi
 
 if [ -z "${USER_ID}" ]; then
-    echo "claude-as-user: no user id (pass as first arg or set AGENTBOX_USER_ID)" >&2
+    echo "claude-as-user: no user id (use --user <id> or set AGENTBOX_USER_ID)" >&2
     exit 2
 fi
 

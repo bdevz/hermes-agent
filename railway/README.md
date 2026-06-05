@@ -67,13 +67,17 @@ echo "$THEIR_SETUP_TOKEN" | python -m railway.agentbox.cli set-token alice --std
 ```
 
 **Integration hook (the one wiring point):** the gateway already runs each
-teammate in their own session with their account id. To make delegated coding
-run on *their* subscription, point the `claude-code` skill at `claude-as-user`
-instead of bare `claude`, passing the session's user id (e.g. export
-`AGENTBOX_USER_ID=<account>` for that session, or call
-`claude-as-user <account> ...`). `claude-as-user` looks up the encrypted token,
-strips billing keys, injects `CLAUDE_CODE_OAUTH_TOKEN`, records the task, and
-execs `claude`. Everything except this one redirect is already built and tested.
+teammate in their own session with their account id. Export that id as
+`AGENTBOX_USER_ID` into the session's tool environment — that single variable is
+all the wiring needed. The `claude-code` skill already instructs the agent to
+delegate through `claude-as-user` whenever `AGENTBOX_USER_ID` is set (and to use
+plain `claude` for the operator/default agent otherwise).
+
+`claude-as-user` (on `PATH` in the image) resolves the user from
+`AGENTBOX_USER_ID` (or `--user <id>`), looks up the encrypted token, strips
+billing keys, injects `CLAUDE_CODE_OAUTH_TOKEN`, records the task, and execs
+`claude` — so every existing skill pattern works unchanged. Everything except
+exporting that one env var per session is already built and tested.
 
 ### Step 5 — Overnight prep + OpenClaw (Phase 3)
 See [`cron/overnight-prep.example.md`](./cron/overnight-prep.example.md) and
