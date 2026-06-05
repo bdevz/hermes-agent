@@ -1,25 +1,15 @@
 name: Deploy to Railway
 
-# Token-based ("API") deploy of the agent box to Railway, with a Phase-0
-# verification (health + zero-API-spend) afterwards.
+# Token-based ("API") deploy of the agent box to Railway via `railway up`.
 #
-# Setup (one time):
-#   1. In Railway: create the agent-box service (Deploy from this GitHub repo),
-#      set its config-as-code path to `railway/railway.json`, attach a volume at
-#      /opt/data, and set service variables (CLAUDE_CODE_OAUTH_TOKEN,
-#      API_SERVER_KEY). Do NOT set ANTHROPIC_API_KEY.
-#   2. Create a PROJECT token (Railway → project → Settings → Tokens), scoped to
-#      the environment you want to deploy.
-#   3. Add repo secret `RAILWAY_TOKEN` = the project token
-#      (Settings → Secrets and variables → Actions). NEVER paste it in chat/code.
-#   4. (Optional) repo *variable* `RAILWAY_SERVICE` = the service name/ID.
-#   5. (Optional) repo secret `API_SERVER_KEY` to enable the zero-spend check,
-#      and repo variable `RAILWAY_PUBLIC_DOMAIN` if auto-resolution can't find it.
+# DORMANT: the active deploy path is Railway's native GitHub-source integration
+# (Railway builds from git on push). The `railway up` CLI path hit Railway's
+# Metal-builder snapshot bug (instant "Deploy failed", empty build logs), so the
+# automatic push trigger is disabled to avoid red-flagging the PR. This workflow
+# is kept (manual-only) in case the CLI path is needed later; note that
+# workflow_dispatch only runs once the workflow is on the default branch.
 #
-# Triggers: manual (Actions → Run workflow) OR a push to the feature branch that
-# touches railway/. The push trigger is what lets the deploy be kicked by a
-# commit (workflow_dispatch alone requires the workflow to live on the default
-# branch).
+# Re-enable the push trigger only if you go back to the `railway up` path.
 
 on:
   workflow_dispatch:
@@ -28,11 +18,12 @@ on:
         description: "Railway service name or ID (overrides RAILWAY_SERVICE var)"
         required: false
         type: string
-  push:
-    branches: [claude/railway-plugin-llm-integration-FvfBA]
-    paths:
-      - 'railway/**'
-      - '.github/workflows/railway-deploy.yml'
+  # push trigger intentionally disabled — see note above (using GitHub-source builds).
+  # push:
+  #   branches: [claude/railway-plugin-llm-integration-FvfBA]
+  #   paths:
+  #     - 'railway/**'
+  #     - '.github/workflows/railway-deploy.yml'
 
 concurrency:
   group: railway-deploy-${{ github.ref }}

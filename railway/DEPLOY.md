@@ -5,6 +5,12 @@ You can connect the cloud repo to Railway any of three ways. They all deploy the
 `railway/Dockerfile.railway`). Pick one — most teams use **A** for day-to-day and
 keep **B/C** for token-based ("API") deploys from CI or a script.
 
+> **Active method: A (GitHub-source integration).** The token-based `railway up`
+> CLI path (B/C) hit Railway's Metal-builder snapshot bug — instant "Deploy
+> failed" with empty build logs before any Docker step runs. Building directly
+> from GitHub (method A) avoids that path. The `.github/workflows/railway-deploy.yml`
+> push trigger is therefore disabled; Railway's GitHub integration is the deployer.
+
 > **Tokens at a glance**
 > - **Project token** → env var `RAILWAY_TOKEN`. Scoped to one project/environment,
 >   deploy-only. This is the one for CI/scripts.
