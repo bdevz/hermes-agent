@@ -3582,6 +3582,15 @@ class AIAgent:
         self._reasoning_deltas_fired = False
         for attempt in range(max_stream_retries + 1):
             try:
+                # Some Codex/ChatGPT backends stream the assistant turn via
+                # incremental ``response.output_item.done`` events but emit a
+                # terminal ``response.completed`` whose ``response.output`` is an
+                # empty list (the snapshot the OpenAI SDK builds the final
+                # response from). ``get_final_response().output`` is then empty
+                # and the caller fails with "response.output is empty" — even
+                # though the full turn was delivered over the wire. Capture the
+                # done items here so we can backfill the final response below.
+                streamed_done_items: list = []
                 with active_client.responses.stream(**api_kwargs) as stream:
                     for event in stream:
                         if self._interrupt_requested:
@@ -3607,7 +3616,15 @@ class AIAgent:
                             reasoning_text = getattr(event, "delta", "")
                             if reasoning_text:
                                 self._fire_reasoning_delta(reasoning_text)
-                    return stream.get_final_response()
+                        # Capture completed output items for empty-output backfill.
+                        elif event_type == "response.output_item.done":
+                            done_item = getattr(event, "item", None)
+                            if done_item is not None:
+                                streamed_done_items.append(done_item)
+                    final_response = stream.get_final_response()
+                    return self._backfill_codex_empty_output(
+                        final_response, streamed_done_items
+                    )
             except RuntimeError as exc:
                 err_text = str(exc)
                 missing_completed = "response.completed" in err_text
@@ -3626,6 +3643,33 @@ class AIAgent:
                     )
                     return self._run_codex_create_stream_fallback(api_kwargs, client=active_client)
                 raise
+
+    @staticmethod
+    def _backfill_codex_empty_output(final_response: Any, streamed_done_items: list) -> Any:
+        """Backfill an empty ``response.output`` from streamed output_item.done items.
+
+        Codex/ChatGPT-style Responses backends (including traffic proxied through
+        the cred-router gateway) can deliver the full assistant turn via
+        ``response.output_item.done`` events while the terminal
+        ``response.completed`` snapshot carries ``output: []``. The OpenAI SDK
+        builds ``get_final_response()`` from that snapshot, so ``.output`` ends up
+        empty and the agent loop rejects the response as "response.output is
+        empty". When that happens but we captured done items during streaming,
+        splice them back onto the final response so the normal Responses parser
+        (``_normalize_codex_response``) sees the real items. No-op when output is
+        already populated or nothing was captured, so well-behaved backends are
+        unaffected.
+        """
+        if final_response is None or not streamed_done_items:
+            return final_response
+        existing = getattr(final_response, "output", None)
+        if isinstance(existing, list) and len(existing) > 0:
+            return final_response
+        try:
+            final_response.output = list(streamed_done_items)
+        except Exception:
+            return final_response
+        return final_response
 
     def _run_codex_create_stream_fallback(self, api_kwargs: dict, client: Any = None):
         """Fallback path for stream completion edge cases on Codex-style Responses backends."""
